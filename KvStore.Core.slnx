@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="KvStore.Core.Tests/KvStore.Core.Tests.csproj" Id="95ada2bf-9721-490d-83b8-143bdce4ed17" />
+  <Project Path="KvStore.Core/KvStore.Core.csproj" />
+</Solution>
