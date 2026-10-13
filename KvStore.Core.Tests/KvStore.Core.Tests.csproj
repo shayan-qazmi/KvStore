@@ -16,6 +16,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\KvStore.Core\KvStore.Core.csproj" />
+    <ProjectReference Include="..\KvStore.CrashWriter\KvStore.CrashWriter.csproj" />
   </ItemGroup>
 
   <ItemGroup>

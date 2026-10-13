@@ -1,4 +1,5 @@
 <Solution>
   <Project Path="KvStore.Core.Tests/KvStore.Core.Tests.csproj" Id="95ada2bf-9721-490d-83b8-143bdce4ed17" />
   <Project Path="KvStore.Core/KvStore.Core.csproj" />
+  <Project Path="KvStore.CrashWriter/KvStore.CrashWriter.csproj" Id="cf0b2b2b-98ea-4a82-808d-789f6e317a58" />
 </Solution>
