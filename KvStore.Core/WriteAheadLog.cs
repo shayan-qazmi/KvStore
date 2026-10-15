@@ -14,18 +14,28 @@ public sealed class WriteAheadLog : IDisposable
     private readonly FileStream _file;
     private readonly BinaryWriter _writer;
 
+    // true  = force every record onto the physical disk (safest, slower)
+    // false = hand records to Windows only (faster; a power cut can lose the last few)
+    private readonly bool _syncOnEveryWrite;
+
+    private bool _disposed;
+
     // Private: the only way to get a log is WriteAheadLog.Open(...).
-    private WriteAheadLog(FileStream file)
+    private WriteAheadLog(FileStream file, bool syncOnEveryWrite)
     {
         _file = file;
         _writer = new BinaryWriter(file, Encoding.UTF8);
+        _syncOnEveryWrite = syncOnEveryWrite;
     }
 
     // Opens (or creates) the log file.
     // 'apply' is called once for every good record already in the file,
     // in order, so the caller can rebuild its memory.
     // Anything broken at the end of the file is cut off.
-    public static WriteAheadLog Open(string path, Action<string, string, bool> apply)
+    public static WriteAheadLog Open(
+        string path,
+        Action<string, string, bool> apply,
+        bool syncOnEveryWrite = true)
     {
         long goodLength = 0; // how many bytes at the start are good records
 
@@ -41,10 +51,10 @@ public sealed class WriteAheadLog : IDisposable
         // Go to the end so new records are added after the good ones.
         file.Seek(0, SeekOrigin.End);
 
-        return new WriteAheadLog(file);
+        return new WriteAheadLog(file, syncOnEveryWrite);
     }
 
-    // Adds one record to the end of the log and forces it onto the disk.
+    // Adds one record to the end of the log.
     public void Append(string key, string value, bool isDeleted)
     {
         byte[] body = BuildBody(key, value, isDeleted);
@@ -57,8 +67,11 @@ public sealed class WriteAheadLog : IDisposable
         _writer.Write(body.Length); // 4 bytes
         _writer.Write(body);        // the body itself
 
-        _writer.Flush();    // move bytes from the writer into the FileStream
-        _file.Flush(true);  // force them onto the physical disk
+        _writer.Flush(); // move bytes from the writer into Windows
+
+        // Force the bytes onto the physical disk. This is the slow part.
+        if (_syncOnEveryWrite)
+            _file.Flush(true);
     }
 
     // Empties the log. Called after the memtable was safely saved as an SSTable.
@@ -141,6 +154,18 @@ public sealed class WriteAheadLog : IDisposable
     // Closes the file.
     public void Dispose()
     {
+        if (_disposed)
+            return;
+        _disposed = true;
+
+        // In fast mode, records may still be only in Windows' memory.
+        // A normal shutdown pushes them to the disk once, here.
+        if (!_syncOnEveryWrite)
+        {
+            _writer.Flush();
+            _file.Flush(true);
+        }
+
         _writer.Dispose();
         _file.Dispose();
     }

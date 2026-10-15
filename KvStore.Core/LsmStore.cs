@@ -27,7 +27,7 @@ public sealed class LsmStore : IDisposable
 
     // maxMemtableEntries: how many entries the memtable holds before it is flushed.
     // compactionThreshold: when this many SSTables exist, they are merged into one.
-    public LsmStore(string directory, int maxMemtableEntries = 1000, int compactionThreshold = 4)
+    public LsmStore(string directory, int maxMemtableEntries = 1000, int compactionThreshold = 4, bool syncOnEveryWrite = true)
     {
         if (maxMemtableEntries < 1)
             throw new ArgumentOutOfRangeException(nameof(maxMemtableEntries));
@@ -57,8 +57,9 @@ public sealed class LsmStore : IDisposable
 
         // Open the WAL. Records still in it (not yet flushed) go back into the memtable.
         _wal = WriteAheadLog.Open(
-            Path.Combine(directory, "wal.log"),
-            (key, value, isDeleted) => _memtable[key] = new Entry(value, isDeleted));
+      Path.Combine(directory, "wal.log"),
+      (key, value, isDeleted) => _memtable[key] = new Entry(value, isDeleted),
+      syncOnEveryWrite);
     }
 
     public void Put(string key, string value)
