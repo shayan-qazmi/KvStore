@@ -1,6 +1,6 @@
 ﻿namespace KvStore.Core;
 
-// The real engine: WAL + memtable + SSTables.
+// The real engine: WAL + memtable + SSTables + compaction.
 // All its files live in one folder:
 //   wal.log               the write-ahead log (safe copy of the memtable)
 //   sst-0000000001.sst    SSTable files (higher number = newer)
@@ -8,6 +8,7 @@ public sealed class LsmStore : IDisposable
 {
     private readonly string _directory;
     private readonly int _maxMemtableEntries;
+    private readonly int _compactionThreshold;
 
     // The memtable: newest writes, sorted, in memory.
     // It also holds tombstones, so a delete can hide a value stored in an SSTable.
@@ -24,18 +25,23 @@ public sealed class LsmStore : IDisposable
     // How many SSTable files exist right now (handy for tests).
     public int SsTableCount => _tables.Count;
 
-    public LsmStore(string directory, int maxMemtableEntries = 1000)
+    // maxMemtableEntries: how many entries the memtable holds before it is flushed.
+    // compactionThreshold: when this many SSTables exist, they are merged into one.
+    public LsmStore(string directory, int maxMemtableEntries = 1000, int compactionThreshold = 4)
     {
         if (maxMemtableEntries < 1)
             throw new ArgumentOutOfRangeException(nameof(maxMemtableEntries));
+        if (compactionThreshold < 2)
+            throw new ArgumentOutOfRangeException(nameof(compactionThreshold));
 
         _directory = directory;
         _maxMemtableEntries = maxMemtableEntries;
+        _compactionThreshold = compactionThreshold;
 
         Directory.CreateDirectory(directory); // does nothing if it already exists
 
-        // A .tmp file means a crash happened in the middle of a flush.
-        // That SSTable was never finished, so delete it. The WAL still has the data.
+        // A .tmp file means a crash happened in the middle of a flush or compaction.
+        // That SSTable was never finished, so delete it. The other files still have the data.
         foreach (string tempFile in Directory.GetFiles(directory, "*.tmp"))
             File.Delete(tempFile);
 
@@ -133,6 +139,106 @@ public sealed class LsmStore : IDisposable
         // If we crash between step 1 and 2, the WAL just replays records that are
         // already in the SSTable. That is harmless.
         _wal.Reset();
+
+        // Too many files make reads slow, so clean up when we reach the limit.
+        if (_tables.Count >= _compactionThreshold)
+            Compact();
+    }
+
+    // Merges ALL SSTables into one new SSTable.
+    // - Only the newest value of each key is kept.
+    // - Deleted keys (tombstones) are dropped for good. This is safe ONLY because
+    //   we merge every table, so no older table is left that a tombstone must hide.
+    // Public so tests can force a compaction.
+    public void Compact()
+    {
+        if (_tables.Count < 2)
+            return; // nothing to merge
+
+        // Remember which tables we are merging (oldest first).
+        var oldTables = new List<SsTable>(_tables);
+
+        // The merged table gets a NEW, higher number, so it counts as the newest.
+        string path = Path.Combine(_directory, $"sst-{_nextTableId:D10}.sst");
+
+        // Step 1: write the merged table (atomic: temp file, then rename).
+        // MergeTables hands out entries one at a time, so memory stays small.
+        SsTable merged = SsTable.Write(path, MergeTables(oldTables));
+        _nextTableId++;
+
+        // Step 2: switch over in memory.
+        _tables.Clear();
+        _tables.Add(merged);
+
+        // Step 3: delete the old files, OLDEST FIRST.
+        // If we crash in the middle, the remaining old files plus the merged file
+        // still give correct answers (the merged file is the newest). Deleting the
+        // oldest first matters: a newer tombstone must never outlive... be removed
+        // before the older value it hides.
+        foreach (SsTable old in oldTables)
+            File.Delete(old.FilePath);
+    }
+
+    // Merges several sorted tables (given oldest first) into ONE sorted stream.
+    // Idea: look at the front entry of every table, take the smallest key,
+    // and move forward in every table that had that key. The newest table wins.
+    private static IEnumerable<KeyValuePair<string, Entry>> MergeTables(List<SsTable> tables)
+    {
+        // One "reader" per table. IEnumerator is what a foreach loop uses behind the scenes.
+        var readers = new List<IEnumerator<KeyValuePair<string, Entry>>>();
+
+        try
+        {
+            foreach (SsTable table in tables)
+                readers.Add(table.ReadAll().GetEnumerator());
+
+            // hasCurrent[i] = does reader i still have an entry? (false = that table is finished)
+            var hasCurrent = new bool[readers.Count];
+            for (int i = 0; i < readers.Count; i++)
+                hasCurrent[i] = readers[i].MoveNext();
+
+            while (true)
+            {
+                // 1) Find the smallest key among the front entries.
+                string? smallest = null;
+                for (int i = 0; i < readers.Count; i++)
+                {
+                    if (!hasCurrent[i])
+                        continue;
+
+                    string key = readers[i].Current.Key;
+                    if (smallest is null || string.CompareOrdinal(key, smallest) < 0)
+                        smallest = key;
+                }
+
+                // Every table is finished: we are done.
+                if (smallest is null)
+                    yield break;
+
+                // 2) Take that key from every table that has it.
+                //    Tables are oldest first, so a later table overwrites 'winner'
+                //    and the NEWEST entry ends up winning.
+                Entry winner = default;
+                for (int i = 0; i < readers.Count; i++)
+                {
+                    if (hasCurrent[i] && readers[i].Current.Key == smallest)
+                    {
+                        winner = readers[i].Current.Value;
+                        hasCurrent[i] = readers[i].MoveNext(); // move that table forward
+                    }
+                }
+
+                // 3) Tombstones are dropped; real values go into the merged table.
+                if (!winner.IsDeleted)
+                    yield return new KeyValuePair<string, Entry>(smallest, winner);
+            }
+        }
+        finally
+        {
+            // Always close every reader (and so every open file), even if something fails.
+            foreach (var reader in readers)
+                reader.Dispose();
+        }
     }
 
     private void FlushIfFull()

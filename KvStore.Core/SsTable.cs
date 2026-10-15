@@ -27,7 +27,7 @@ public sealed class SsTable
     }
 
     // Writes sorted entries to a new SSTable file.
-    // 'sortedEntries' MUST already be sorted by key (a SortedDictionary is).
+    // 'sortedEntries' MUST already be sorted by key.
     public static SsTable Write(string path, IEnumerable<KeyValuePair<string, Entry>> sortedEntries)
     {
         // Write to a temporary file first, then rename. If we crash while writing,
@@ -84,6 +84,21 @@ public sealed class SsTable
         return table;
     }
 
+    // Reads one entry's value from an already-open file.
+    private static Entry ReadEntry(FileStream stream, Location location)
+    {
+        // A tombstone has no value to read.
+        if (location.IsDeleted)
+            return new Entry("", true);
+
+        // Jump straight to the value and read exactly its bytes.
+        stream.Seek(location.ValueOffset, SeekOrigin.Begin);
+        byte[] bytes = new byte[location.ValueLength];
+        stream.ReadExactly(bytes);
+
+        return new Entry(Encoding.UTF8.GetString(bytes), false);
+    }
+
     // Looks for one key. Returns false if this table has no entry for it.
     // Returns true if it does (the entry may be a tombstone: check IsDeleted).
     public bool TryGet(string key, out Entry entry)
@@ -94,21 +109,14 @@ public sealed class SsTable
             return false;
         }
 
-        // A tombstone has no value to read.
         if (location.IsDeleted)
         {
             entry = new Entry("", true);
             return true;
         }
 
-        // Open the file, jump straight to the value, read exactly its bytes.
         using var stream = new FileStream(FilePath, FileMode.Open, FileAccess.Read, FileShare.Read);
-        stream.Seek(location.ValueOffset, SeekOrigin.Begin);
-
-        byte[] bytes = new byte[location.ValueLength];
-        stream.ReadExactly(bytes);
-
-        entry = new Entry(Encoding.UTF8.GetString(bytes), false);
+        entry = ReadEntry(stream, location);
         return true;
     }
 
@@ -125,20 +133,17 @@ public sealed class SsTable
             if (string.CompareOrdinal(key, endKey) > 0)
                 break;                    // sorted, so nothing later can be in range: stop
 
-            Entry entry;
-            if (location.IsDeleted)
-            {
-                entry = new Entry("", true);
-            }
-            else
-            {
-                stream.Seek(location.ValueOffset, SeekOrigin.Begin);
-                byte[] bytes = new byte[location.ValueLength];
-                stream.ReadExactly(bytes);
-                entry = new Entry(Encoding.UTF8.GetString(bytes), false);
-            }
-
-            yield return new KeyValuePair<string, Entry>(key, entry);
+            yield return new KeyValuePair<string, Entry>(key, ReadEntry(stream, location));
         }
+    }
+
+    // Returns EVERY entry in sorted order, one at a time (used by compaction).
+    // Because of "yield return", only one value is in memory at any moment.
+    public IEnumerable<KeyValuePair<string, Entry>> ReadAll()
+    {
+        using var stream = new FileStream(FilePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+
+        foreach (var (key, location) in _index)
+            yield return new KeyValuePair<string, Entry>(key, ReadEntry(stream, location));
     }
 }
