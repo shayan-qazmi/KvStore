@@ -1,6 +1,7 @@
 <Solution>
   <Project Path="KvStore.Api.Tests/KvStore.Api.Tests.csproj" Id="3010de4f-7f3a-460d-8304-eba8ec52aeb9" />
   <Project Path="KvStore.Api/KvStore.Api.csproj" Id="329a93c6-1815-4f69-b8f2-451253dbe37b" />
+  <Project Path="KvStore.Benchmarks/KvStore.Benchmarks.csproj" Id="780ea381-8e28-4ed0-96a3-fe38afc51daf" />
   <Project Path="KvStore.Core.Tests/KvStore.Core.Tests.csproj" Id="95ada2bf-9721-490d-83b8-143bdce4ed17" />
   <Project Path="KvStore.Core/KvStore.Core.csproj" />
   <Project Path="KvStore.CrashWriter/KvStore.CrashWriter.csproj" Id="cf0b2b2b-98ea-4a82-808d-789f6e317a58" />
