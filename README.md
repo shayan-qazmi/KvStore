@@ -71,7 +71,7 @@ JSON list, then `204 No Content`.
 - Keeps data in sorted, immutable files (SSTables) and merges them (compaction).
 - Deletes are stored as "tombstones", because files are never edited.
 - A thread-safe wrapper, so the engine can sit behind a web server.
-- An ASP.NET Core Minimal API with four endpoints.
+- An ASP.NET Core Minimal API with four key-value endpoints and a status page.
 - 45 automated tests, including one that kills the writing process in the middle of a write.
 - A benchmark tool that measures the engine and the HTTP API.
 - A small React web page (optional demo) that uses the API from a browser.
@@ -209,7 +209,7 @@ The same entry inside an SSTable takes 13 bytes:
 02 00 00 00 | 68 69 | 00 | 02 00 00 00 | 79 6F
 ```
 
-A unit test checks the WAL layout byte for byte.
+A unit test checks the record length, the body length and every byte of the body. It does not compare the 4 checksum bytes.
 
 ## What happens if it crashes
 
@@ -279,7 +279,7 @@ an optional demo client and is not part of the .NET solution.
 **What it does**
 - Saves, reads and deletes one key (PUT, GET, DELETE).
 - Searches a range of keys, or shows all keys, in a table. Clicking a row copies it into the form.
-- Shows an "API online / offline" badge, checked with `GET /`.
+- Shows an "API online / offline" badge that is updated after every request..
 - Shows a log of every HTTP request it sends, with the method, path, status code and time, so
   the HTTP traffic is visible.
 
@@ -292,8 +292,11 @@ part. The API code did not need any change.
 **Run it** (needs Node.js, current LTS version):
 
 ```
-dotnet run --project KvStore.Api --launch-profile http     (terminal 1, from the repository root)
-cd KvStore.Ui                                             (terminal 2)
+# terminal 1, from the repository root: start the API
+dotnet run --project KvStore.Api --launch-profile http
+
+# terminal 2: start the UI
+cd KvStore.Ui
 npm install
 npm run dev
 ```
@@ -323,13 +326,14 @@ U+FFFF would not appear.
 ## Project layout
 
 ```
-KvStore.Core/                (repository root, holds KvStore.sln)
+KvStore.Core/                (repository root, holds KvStore.slnx)
   KvStore.Core/              the engine (class library)
   KvStore.Core.Tests/        35 tests
   KvStore.Api/               ASP.NET Core Minimal API
   KvStore.Api.Tests/         10 tests
   KvStore.CrashWriter/       small program the crash test starts and kills
   KvStore.Benchmarks/        benchmark tool
+  KvStore.Ui/                React + Vite demo page (not part of the .slnx)
 ```
 
 | Project | Type | Notes |
@@ -340,7 +344,7 @@ KvStore.Core/                (repository root, holds KvStore.sln)
 | `KvStore.Api.Tests` | xUnit tests | Uses `Microsoft.AspNetCore.Mvc.Testing` to run the API in memory, with no real network |
 | `KvStore.CrashWriter` | console app | Writes records forever and prints each number after the save finished |
 | `KvStore.Benchmarks` | console app | Measures writes and reads per second |
-|  KvStore.Ui/                React + Vite demo page (not part of the .sln) |
+| `KvStore.Ui` | React + Vite page | Uses the API from a browser. Needs Node.js. Not part of the `.slnx` |
 
 ## Testing
 
@@ -368,7 +372,7 @@ temporary file or folder with a unique name and deletes it afterwards, so tests 
 | `Latest_Value_Wins_After_Restart` | replay order gives the newest value |
 | `Non_Ascii_Text_Survives_Restart` | non-English text is saved correctly |
 | `Missing_File_Starts_Empty` | a new store starts empty |
-| `Record_Is_Written_In_The_Documented_Format` | the file layout matches this README, byte for byte |
+| `the file layout matches this README (the 4 checksum bytes are not compared)` | the file layout matches this README, byte for byte |
 | `Half_Written_Last_Record_Is_Ignored` | a cut-off last record does not stop the store from opening |
 | `Store_Keeps_Working_After_Recovering_From_Half_Written_Record` | new writes after recovery are readable (the broken end was cut off) |
 | `Damaged_Record_Is_Detected_By_Checksum` | a changed byte is caught |
@@ -395,6 +399,8 @@ temporary file or folder with a unique name and deletes it afterwards, so tests 
 | `Replaying_Wal_After_Flush_Is_Harmless` | the crash between flush steps changes nothing |
 | `Leftover_Temp_File_Is_Removed` | a half-written SSTable's temp file is cleaned up |
 | `Keys_Are_Sorted_By_Character_Value` | capital letters sort before lowercase, everywhere |
+
+Rows 1, 3, 4 and 6 have tests of their own. Row 8 is tested only for damage in the last record. Rows 2, 5 and 7 rest on reasoning: they reuse code that other tests cover, and row 7 (only some old files deleted) is not tested on its own.
 
 **CompactionTests (6)**
 
@@ -487,9 +493,9 @@ It repeats this 10 times on the same file. Result: it passed every time I ran it
 
 | Keys written | Already stored | Writes/sec | Reads/sec |
 |---|---|---|---|
-| 1,000 | 0 | 567 | 3,034 |
-| 10,000 | 1,000 | 607 | 1,537 |
-| 100,000 | 11,000 | 676 | 4,786 |
+| 1,000 | 0 | 554 | 2,847 |
+| 10,000 | 1,000 | 629 | 6,426 |
+| 100,000 | 11,000 | 677 | 6,220 |
 
 An earlier engine run gave similar numbers (safe: 1,044 and 990 writes/sec; fast: 25,579 and
 12,095), so results vary by up to about 20% between runs. Read them as orders of magnitude.
@@ -500,18 +506,25 @@ An earlier engine run gave similar numbers (safe: 1,044 and 990 writes/sec; fast
 - **Fast mode is about 12 to 32 times faster for writes.** It trades safety on a power cut for speed.
 - **Fast-mode writes drop once flushes and compactions start** (31,169, then 12,604), then stay roughly flat up to 111,000 keys (11,600). Flushing and compaction are the likely cause. I have not profiled it, and I did not test beyond 111,000 keys, where compaction cost could start to grow.
 - **Reads slow by about a third** from 1,000 to 111,000 keys (46,877 to 30,699 in fast mode). I did not find out why. Bigger indexes, more tables to check and opening files are candidates.
-- **The network is the biggest cost for reads.** An in-process read takes 0.02 to 0.035 ms. An HTTP read takes 0.2 to 0.65 ms, which is roughly 6 to 23 times slower.
+- **The network is the biggest cost for reads.** An in-process read takes 0.02 to 0.035 ms. An HTTP read takes 0.16 to 0.35 ms in the latest run, which is roughly 5 to 15 times slower.
 - **HTTP adds about 0.4 to 0.8 ms to a write** on top of the disk sync.
-- **HTTP read speed is noisy** (1,537 to 4,786 per second) and does not follow the store size. I would need more runs to say more.
+- **HTTP read speed varies a lot between runs.** The latest run gave 2,847, 6,426 and 6,220 reads per second. Earlier runs gave as low as 1,537 and as high as 4,786. In the latest run the first round was the slowest, which may be warm-up (200 warm-up requests may not be enough). I would need more runs to say more.
 - This is one client on one machine. The numbers show the cost of a single request, not how many users the server can handle.
 
 **Reproduce**
 
 ```
+# engine, safe mode
 dotnet run -c Release --project KvStore.Benchmarks -- engine --sizes 1000,10000,100000
+
+# engine, fast mode
 dotnet run -c Release --project KvStore.Benchmarks -- engine --fast --sizes 1000,10000,100000
-dotnet run -c Release --project KvStore.Api --launch-profile http          (terminal 1)
-dotnet run -c Release --project KvStore.Benchmarks -- http --sizes 1000,10000,100000   (terminal 2)
+
+# HTTP: first start the API in terminal 1 ...
+dotnet run -c Release --project KvStore.Api --launch-profile http
+
+# ... then run the benchmark in terminal 2
+dotnet run -c Release --project KvStore.Benchmarks -- http --sizes 1000,10000,100000
 ```
 
 Always use `-c Release`. A Debug build gives misleading numbers. The safe-mode 100,000 round takes
@@ -582,6 +595,8 @@ myself and can explain how each part works.
 - Testing crashes on purpose, and being honest about what a test does not prove.
 - How HTTP works (verbs, status codes, ports), ASP.NET Core Minimal APIs, dependency injection, `async` and `await`, and why shared state needs a lock.
 - Measuring before concluding, and correcting my own guesses when the numbers disagreed.
+- How a browser page talks to an API: `fetch`, URL-encoding, the CORS rule and a dev-server proxy.
+- The basics of React (components, state, effects) and of the Node tools around it (npm, Vite).
 
 ## What I would do next
 
@@ -609,7 +624,7 @@ myself and can explain how each part works.
 - **Ordinal order:** sorting by character value, with no language rules.
 - **Singleton:** one shared instance of an object for the whole application.
 - **Minimal API:** ASP.NET Core's short way of mapping a verb and a path to a function.
-- - **CORS:** a browser rule that blocks a page from calling a server at a different address unless that server allows it.
+- **CORS:** a browser rule that blocks a page from calling a server at a different address unless that server allows it.
 - **Proxy:** a middleman that forwards a request to another server. Here, the Vite dev server forwards `/api/...` to the C# API.
 - **React:** a JavaScript library for building web pages from small functions called components.
 - **Vite:** a tool that serves and builds a React page.
