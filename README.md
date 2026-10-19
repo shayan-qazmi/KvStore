@@ -24,6 +24,7 @@ know it cannot do.
 - [Durability modes](#durability-modes)
 - [Concurrency](#concurrency)
 - [HTTP API](#http-api)
+- [Web UI](#web-ui)
 - [Project layout](#project-layout)
 - [Testing](#testing)
 - [Benchmarks](#benchmarks)
@@ -73,6 +74,7 @@ JSON list, then `204 No Content`.
 - An ASP.NET Core Minimal API with four endpoints.
 - 45 automated tests, including one that kills the writing process in the middle of a write.
 - A benchmark tool that measures the engine and the HTTP API.
+- A small React web page (optional demo) that uses the API from a browser.
 
 ## How it works
 
@@ -266,6 +268,58 @@ Settings (give them after `--`, for example `dotnet run --project KvStore.Api --
 
 Launch profiles: `http` (safe mode) and `http-fast` (fast mode), both on port 5080.
 
+
+## Web UI
+
+`KvStore.Ui` is a small React page (built with Vite) that uses the API from a browser. It is
+an optional demo client and is not part of the .NET solution.
+
+![KvStore UI](docs/ui.png)
+
+**What it does**
+- Saves, reads and deletes one key (PUT, GET, DELETE).
+- Searches a range of keys, or shows all keys, in a table. Clicking a row copies it into the form.
+- Shows an "API online / offline" badge, checked with `GET /`.
+- Shows a log of every HTTP request it sends, with the method, path, status code and time, so
+  the HTTP traffic is visible.
+
+**How the browser reaches the API.** The page is served at `http://localhost:5173` and the API
+runs at `http://localhost:5080`. A browser blocks a page from calling a different address unless
+that server allows it (this rule is called CORS). To avoid it, the Vite dev server acts as a
+proxy: the page calls `/api/...`, and Vite forwards the call to the API and removes the `/api`
+part. The API code did not need any change.
+
+**Run it** (needs Node.js, current LTS version):
+
+```
+dotnet run --project KvStore.Api --launch-profile http     (terminal 1, from the repository root)
+cd KvStore.Ui                                             (terminal 2)
+npm install
+npm run dev
+```
+
+Then open http://localhost:5173.
+
+**Files**
+
+| File | What it is |
+|---|---|
+| `package.json` | the libraries (React, Vite) and the `npm run dev` command |
+| `vite.config.js` | the dev server and the `/api` proxy to port 5080 |
+| `index.html` | the page shell, with an empty box that React fills |
+| `src/main.jsx` | starts React |
+| `src/App.jsx` | the whole page: state, the four HTTP calls, and the layout |
+| `src/App.css` | the styling, with automatic light and dark mode |
+
+In development, React's strict mode runs start-up code twice, so the log shows two `GET /`
+lines when the page opens.
+
+**Limits of the UI:** it only works with the dev server (`npm run dev`), because the proxy lives
+there. There is no production build setup, no login, no paging for big ranges, and no automated
+UI tests. "Show all keys" uses a very large end key, so a key that starts with the character
+U+FFFF would not appear.
+
+
 ## Project layout
 
 ```
@@ -286,6 +340,7 @@ KvStore.Core/                (repository root, holds KvStore.sln)
 | `KvStore.Api.Tests` | xUnit tests | Uses `Microsoft.AspNetCore.Mvc.Testing` to run the API in memory, with no real network |
 | `KvStore.CrashWriter` | console app | Writes records forever and prints each number after the save finished |
 | `KvStore.Benchmarks` | console app | Measures writes and reads per second |
+|  KvStore.Ui/                React + Vite demo page (not part of the .sln) |
 
 ## Testing
 
@@ -501,6 +556,9 @@ about two minutes.
 | Port 5080 is already in use | Stop the other program, or change `applicationUrl` in `KvStore.Api/Properties/launchSettings.json` |
 | The crash test says the writer was not found | Build the whole solution first (`dotnet build`) |
 | You want an empty database | Stop the API and delete `%LOCALAPPDATA%\KvStoreApi` |
+| The UI badge says "API offline" | Start the API first (`dotnet run --project KvStore.Api --launch-profile http`) and click "Check again" |
+| PowerShell says "running scripts is disabled" when you type `npm` | Type `npm.cmd install` and `npm.cmd run dev` instead |
+| `npm install` says "Invalid package.json" | You are in the wrong folder, or the file is empty. Run it inside `KvStore.Ui` |
 
 ## How it was built
 
@@ -511,7 +569,8 @@ I built it one phase at a time and committed after each phase, so the git histor
 3. Checksummed log, torn-write recovery, and the process-kill crash test
 4. LSM-tree: write-ahead log, memtable, SSTables, flush, then compaction
 5. Thread-safe wrapper, HTTP API with tests, and the benchmark tool
-6. This README
+6. A React web page (Vite) that uses the API 
+7. This README
 
 I built it step by step with an AI assistant's guidance (Claude). I ran and tested every phase
 myself and can explain how each part works.
@@ -550,3 +609,7 @@ myself and can explain how each part works.
 - **Ordinal order:** sorting by character value, with no language rules.
 - **Singleton:** one shared instance of an object for the whole application.
 - **Minimal API:** ASP.NET Core's short way of mapping a verb and a path to a function.
+- - **CORS:** a browser rule that blocks a page from calling a server at a different address unless that server allows it.
+- **Proxy:** a middleman that forwards a request to another server. Here, the Vite dev server forwards `/api/...` to the C# API.
+- **React:** a JavaScript library for building web pages from small functions called components.
+- **Vite:** a tool that serves and builds a React page.
